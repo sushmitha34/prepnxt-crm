@@ -21,7 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # either project:
 #   backend:  C:\Users\sushm\Downloads\prepnxt-crm-backend
 #   frontend: C:\Users\sushm\Downloads\prepnxt-crm\prepnxt-crm
-FRONTEND_BUILD_DIR = BASE_DIR.parent / "prepnxt-crm" / "prepnxt-crm" / "build"
+FRONTEND_BUILD_DIR = BASE_DIR / "frontend_build"
 
 
 # Quick-start development settings - unsuitable for production
