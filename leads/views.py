@@ -4,6 +4,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAdminUser, IsAuthenticated   # add IsAdminUser
 
 from .csv_import import parse_csv_text
 from .models import Activity, Lead
@@ -16,6 +17,34 @@ from .serializers import (
 )
 
 
+def is_admin(user):
+    """Admins see and touch everything. Everyone else is confined to the leads
+    they own. `is_staff` is included deliberately so you can grant full access
+    from the Django admin UI without handing out `is_superuser`."""
+    return user.is_superuser or user.is_staff
+
+
+def scope_leads(queryset, user):
+    """Row-level access control. This is the ONLY place lead visibility is
+    decided — every view below routes through it, so there's no way to add an
+    endpoint that accidentally leaks another SPOC's leads.
+
+    Note leads with owner_user=None (Owner Email in the CSV didn't match any
+    account) are visible to admins only. That's intentional: an unassigned
+    lead being silently invisible is far better than it being visible to
+    everyone.
+    """
+    if is_admin(user):
+        return queryset
+    return queryset.filter(owner_user=user)
+
+
+def scope_activities(queryset, user):
+    if is_admin(user):
+        return queryset
+    return queryset.filter(lead__owner_user=user)
+
+
 class ImportLeadsCSVView(APIView):
     """
     POST /api/leads/import-csv/
@@ -24,12 +53,13 @@ class ImportLeadsCSVView(APIView):
       - multipart/form-data with a 'file' field (CSV upload), OR
       - JSON / form body with a 'csv_text' field (pasted Excel/CSV rows)
 
-    Mirrors the frontend's column mapping: First Name + Last Name -> name,
-    each non-empty "Follow up N" column becomes a Follow-up Activity, and
-    all imported leads start as New (is_new=True).
+    Owner Email in the CSV is matched (case-insensitively) against User.email
+    to set each lead's owner_user. Rows whose email matches no account are
+    still imported, but land unassigned — visible to admins only — and are
+    reported back in `errors` so nothing disappears silently.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -60,7 +90,7 @@ class ImportLeadsCSVView(APIView):
                 {
                     "detail": "No leads could be parsed. Check that the header row matches "
                     "the expected columns (First Name, Last Name, Email, Phone Number, "
-                    "SPOC, Lead Status, Follow up 1-7, etc.).",
+                    "SPOC, Owner Email, Lead Status, Poll, etc.).",
                     "rows_processed": parsed["row_count"],
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -73,13 +103,24 @@ class ImportLeadsCSVView(APIView):
             activity_objs = [Activity(**data) for data in parsed["activities"]]
             Activity.objects.bulk_create(activity_objs)
 
+        # The importer only gets back the leads they can actually see. An
+        # ordinary SPOC importing a mixed sheet creates everyone's leads but
+        # only sees their own come back — consistent with every other endpoint.
+        visible_leads = (
+            lead_objs
+            if is_admin(request.user)
+            else [l for l in lead_objs if l.owner_user_id == request.user.id]
+        )
+        visible_lead_ids = {l.id for l in visible_leads}
+        visible_activities = [a for a in activity_objs if a.lead_id in visible_lead_ids]
+
         result = {
             "leads_created": len(lead_objs),
             "activities_created": len(activity_objs),
             "rows_processed": parsed["row_count"],
             "errors": parsed["errors"],
-            "leads": lead_objs,
-            "activities": activity_objs,
+            "leads": visible_leads,
+            "activities": visible_activities,
         }
         serializer = CSVImportResultSerializer(result)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -87,40 +128,43 @@ class ImportLeadsCSVView(APIView):
 
 class LeadListView(generics.ListCreateAPIView):
     """
-    GET  /api/leads/  — list leads, 50 per page (?page=2, or ?page_size=N up
-                         to 200). Response shape: {count, next, previous, results}
-    POST /api/leads/  — create a lead manually (owner is read-only here too;
-                         set it via the CSV import path or a dedicated field
-                         if you need manual assignment on creation)
+    GET  /api/leads/  — list leads the caller owns (all of them, if admin),
+                         50 per page. Response: {count, next, previous, results}
+    POST /api/leads/  — create a lead manually; the caller becomes its owner
     """
 
-    queryset = Lead.objects.all()
     serializer_class = LeadSerializer
     pagination_class = LeadPagination
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        return scope_leads(Lead.objects.all(), self.request.user)
+
     def perform_create(self, serializer):
-        # owner is read-only on LeadSerializer (see serializers.py) so the
-        # client can never set it directly — it's always the logged-in user
-        # who created the lead, set here server-side.
-        serializer.save(owner=self.request.user.username)
+        # Both fields are set server-side and neither is client-writable:
+        # owner_user is the real link, owner is the display name.
+        serializer.save(
+            owner=self.request.user.username,
+            owner_user=self.request.user,
+        )
 
 
 class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     GET    /api/leads/<id>/  — lead profile with its activity timeline
-    PATCH  /api/leads/<id>/  — partial update (owner is rejected — read-only
-                                 on the serializer)
+    PATCH  /api/leads/<id>/  — partial update
     DELETE /api/leads/<id>/  — deletes the lead and cascades its activities
+
+    Scoped: requesting a lead you don't own returns 404, not 403 — a 403 would
+    confirm the lead exists, which is itself a leak.
     """
 
-    queryset = Lead.objects.all()
-    serializer_class = LeadDetailSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        return scope_leads(Lead.objects.all(), self.request.user)
+
     def get_serializer_class(self):
-        # Reads return the full detail shape (with activities); writes use
-        # the plain LeadSerializer since activities aren't written here.
         if self.request.method in ("PUT", "PATCH"):
             return LeadSerializer
         return LeadDetailSerializer
@@ -128,7 +172,7 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class ActivityListView(generics.ListCreateAPIView):
     """
-    GET  /api/activities/            — list all activities
+    GET  /api/activities/            — activities on leads the caller owns
     GET  /api/activities/?lead=<id>  — activities for one lead
     POST /api/activities/            — create an activity
     """
@@ -137,20 +181,32 @@ class ActivityListView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = Activity.objects.all()
+        qs = scope_activities(Activity.objects.all(), self.request.user)
         lead_id = self.request.query_params.get("lead")
         if lead_id:
             qs = qs.filter(lead_id=lead_id)
         return qs
 
+    def perform_create(self, serializer):
+        # Guard the write path too: without this, a SPOC could POST an activity
+        # against any lead id they guessed, even one they can't read.
+        lead = serializer.validated_data.get("lead")
+        if lead and not scope_leads(Lead.objects.filter(pk=lead.pk), self.request.user).exists():
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied("You don't have access to this lead.")
+        serializer.save()
+
 
 class ActivityDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     GET    /api/activities/<id>/  — single activity
-    PATCH  /api/activities/<id>/  — partial update (e.g. mark Completed)
+    PATCH  /api/activities/<id>/  — partial update
     DELETE /api/activities/<id>/  — remove an activity
     """
 
-    queryset = Activity.objects.all()
     serializer_class = ActivitySerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return scope_activities(Activity.objects.all(), self.request.user)

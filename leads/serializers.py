@@ -19,13 +19,34 @@ class LeadSerializer(serializers.ModelSerializer):
         model = Lead
         fields = [
             "id", "is_new", "sl_no", "first_name", "last_name", "name",
-            "phone", "email", "organization", "job_title", "experience",
-            "salary", "attended", "time", "result", "owner", "status",
+            "phone", "phone_country_code",
+            "secondary_phone", "secondary_phone_country_code",
+            "email", "secondary_email",
+            "organization", "job_title", "experience",
+            "salary", "attended", "time", "result",
+            "price_quoted",
+            "notes",
+            "owner", "owner_email", "status",
             "created_at", "updated_at",
         ]
         # owner is set once on create (from SPOC on import, or whoever creates
         # the lead manually) and can't be reassigned afterwards via the API.
-        read_only_fields = ["id", "name", "owner", "created_at", "updated_at"]
+        #
+        # phone and email are deliberately NOT read-only: AddLeadModal needs to
+        # set them when creating a lead by hand. They're locked in the Lead
+        # Profile at the UI level instead.
+        #
+        # price_quoted and notes are writable — both are set from the Lead
+        # Profile / Create Activity modals, which PATCH the lead. Any field
+        # missing from the list above is silently dropped by DRF on both read
+        # and write, which is exactly how price_quoted was disappearing.
+        #
+        # owner_user is never client-writable — it's set from Owner Email on
+        # import, or from request.user on manual creation. Letting a client set
+        # it would let anyone reassign a lead to themselves.
+        read_only_fields = [
+            "id", "name", "owner", "owner_email", "created_at", "updated_at",
+        ]
 
 
 class LeadDetailSerializer(LeadSerializer):

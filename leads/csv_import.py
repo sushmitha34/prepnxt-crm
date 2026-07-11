@@ -4,6 +4,7 @@ import re
 import uuid
 from datetime import datetime
 
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from .models import ActivityType, CompletionStatus, LeadStatus
@@ -29,14 +30,31 @@ FIELD_HEADER_ALIASES = {
     "salary": ["current salary", "salary"],
     "attended": ["attended"],
     "time": ["time"],
-    "result": ["result"],
+    # `result` is the poll response. The column has been called several things
+    # across sheets; whichever spelling turns up, it lands in the same field,
+    # which the UI labels "Poll response".
+    "result": ["poll response", "poll", "result"],
     "first_name": ["first name"],
     "last_name": ["last name"],
     "email": ["email"],
     "phone": ["phone number", "phone"],
     "owner": ["spoc", "owner"],
+    # The join key for multi-tenancy: matched case-insensitively against
+    # User.email to set lead.owner_user. Without a match the lead is imported
+    # unassigned (admin-visible only) and flagged in `errors`.
+    "owner_email": ["owner email", "owner's email", "spoc email", "owner_email"],
     "status": ["lead status", "status"],
 }
+
+# Anything in here counts as a yes; everything else — including a blank cell,
+# a missing column entirely, or junk text — is a no. Defaulting to "No" rather
+# than "" means the column is never ambiguous: it either says Yes or it says
+# No, and an empty CSV cell means the lead did not respond.
+_POLL_YES = {"yes", "y", "true", "1", "attended", "responded"}
+
+
+def normalize_poll(raw):
+    return "Yes" if _norm(raw).lower() in _POLL_YES else "No"
 
 
 def _clean_header(h):
@@ -131,6 +149,15 @@ def parse_csv_text(csv_text, today=None):
     errors = []
     row_count = 0
 
+    # One query for the whole file rather than a lookup per row. Emails are
+    # lowercased on both sides so "Arvind@Prepnxt.com" still matches.
+    User = get_user_model()
+    users_by_email = {
+        (u.email or "").strip().lower(): u.id
+        for u in User.objects.all()
+        if u.email
+    }
+
     for row in reader:
         row_count += 1
         row = {(k.strip() if k else k): v for k, v in row.items()}
@@ -145,6 +172,20 @@ def parse_csv_text(csv_text, today=None):
         last_name = get("last_name")
         name = " ".join(p for p in [first_name, last_name] if p) or "Unnamed Lead"
         owner = get("owner")
+        owner_email = get("owner_email").lower()
+        owner_user_id = users_by_email.get(owner_email) if owner_email else None
+
+        if owner_email and owner_user_id is None:
+            errors.append(
+                f"Row {row_count}: no account for '{owner_email}' yet — lead "
+                f"imported unassigned, and will be claimed automatically when "
+                f"that account is created."
+            )
+        elif not owner_email:
+            errors.append(
+                f"Row {row_count}: no Owner Email given — lead imported unassigned."
+            )
+
         status = normalize_status(row.get(headers.get("status")))
         lead_id = uuid.uuid4()
         now = timezone.now()
@@ -165,8 +206,14 @@ def parse_csv_text(csv_text, today=None):
                 "salary": get("salary"),
                 "attended": get("attended"),
                 "time": get("time"),
-                "result": get("result"),
+                # Always "Yes" or "No" — never blank. See normalize_poll above.
+                "result": normalize_poll(get("result")),
                 "owner": owner,
+                # Stored permanently, not just used for the lookup above. If no
+                # account exists yet, this is what lets the lead be claimed
+                # later — see leads/signals.py.
+                "owner_email": owner_email,
+                "owner_user_id": owner_user_id,
                 "status": status,
             }
         )
