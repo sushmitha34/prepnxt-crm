@@ -57,6 +57,13 @@ class Lead(models.Model):
     experience = models.CharField(max_length=50, blank=True)
     salary = models.CharField(max_length=50, blank=True)
 
+    # Where the lead came from (e.g. "Instagram Ad", "Referral", "Webinar
+    # Poll") and which course they're enquiring about. Both free-text — same
+    # reasoning as everything else on this model that comes from a webinar
+    # sheet: source spreadsheets aren't guaranteed to use consistent labels.
+    lead_source = models.CharField(max_length=120, blank=True, default="")
+    course_name = models.CharField(max_length=255, blank=True, default="")
+
     attended = models.CharField(max_length=50, blank=True)
     time = models.CharField(max_length=50, blank=True)
     result = models.CharField(max_length=255, blank=True)
@@ -65,7 +72,7 @@ class Lead(models.Model):
     # must treat this as read-only on update (see note in reply).
     owner = models.CharField(max_length=120, blank=True)
     owner_email = models.EmailField(blank=True, default="")
-    
+
     owner_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -73,7 +80,7 @@ class Lead(models.Model):
         on_delete=models.SET_NULL,
         related_name="leads",
     )
-    
+
     # Country code is stored separately from the number so the digits coming
     # out of the CSV stay clean. Defaults to India for every lead, including
     # CSV imports (which never supply one).
@@ -90,7 +97,7 @@ class Lead(models.Model):
     status = models.CharField(
         max_length=50, choices=LeadStatus.choices, default=LeadStatus.NEW_LEAD
     )
-    
+
     price_quoted = models.CharField(max_length=64, blank=True, default="")
     notes = models.TextField(blank=True, default="")
 

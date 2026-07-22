@@ -24,6 +24,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "email", "secondary_email",
             "organization", "job_title", "experience",
             "salary", "attended", "time", "result",
+            "lead_source", "course_name",
             "price_quoted",
             "notes",
             "owner", "owner_email", "status",
@@ -36,10 +37,11 @@ class LeadSerializer(serializers.ModelSerializer):
         # set them when creating a lead by hand. They're locked in the Lead
         # Profile at the UI level instead.
         #
-        # price_quoted and notes are writable — both are set from the Lead
-        # Profile / Create Activity modals, which PATCH the lead. Any field
-        # missing from the list above is silently dropped by DRF on both read
-        # and write, which is exactly how price_quoted was disappearing.
+        # lead_source and course_name are writable — set from AddLeadModal on
+        # manual creation, and editable from the Lead Profile panel same as
+        # price_quoted/notes. Any field missing from the list above is
+        # silently dropped by DRF on both read and write, which is exactly how
+        # price_quoted was disappearing before it was added here.
         #
         # owner_user is never client-writable — it's set from Owner Email on
         # import, or from request.user on manual creation. Letting a client set
