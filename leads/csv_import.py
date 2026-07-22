@@ -44,6 +44,12 @@ FIELD_HEADER_ALIASES = {
     # unassigned (admin-visible only) and flagged in `errors`.
     "owner_email": ["owner email", "owner's email", "spoc email", "owner_email"],
     "status": ["lead status", "status"],
+    # Added after lead_source/course_name went blank on every import — the
+    # aliases here are a best guess at common sheet headers. If a sheet uses
+    # something not listed (e.g. "Source Channel", "Program Name"), add the
+    # exact header text as another alias rather than renaming the sheet.
+    "lead_source": ["lead source", "source"],
+    "course_name": ["course name", "course"],
 }
 
 # Anything in here counts as a yes; everything else — including a blank cell,
@@ -204,6 +210,8 @@ def parse_csv_text(csv_text, today=None):
                 "job_title": get("job_title"),
                 "experience": get("experience"),
                 "salary": get("salary"),
+                "lead_source": get("lead_source"),
+                "course_name": get("course_name"),
                 "attended": get("attended"),
                 "time": get("time"),
                 # Always "Yes" or "No" — never blank. See normalize_poll above.
